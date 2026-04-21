@@ -1,6 +1,8 @@
 import secrets
 from datetime import datetime, timedelta, timezone
-from flask import request
+from fastapi import Depends, HTTPException, status
+from typing import Annotated
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 import jwt
 
 
@@ -12,24 +14,7 @@ USERS: dict[str, dict[str, str | None]] = {
 }
 
 
-class AuthenticationError(Exception):
-    """认证失败异常基类"""
-    pass
-
-
-class AuthFormatError(AuthenticationError):
-    """认证格式错误（非 Bearer 格式）"""
-    pass
-
-
-class TokenExpiredError(AuthenticationError):
-    """访问令牌已过期，可使用 refresh_token 刷新"""
-    pass
-
-
-class TokenInvalidError(AuthenticationError):
-    """令牌无效或已损坏，无法刷新"""
-    pass
+security = HTTPBearer()
 
 
 class JWTAuth:
@@ -51,26 +36,38 @@ class JWTAuth:
         """解码 JWT 访问令牌，返回 payload"""
         return jwt.decode(token, self.secret, algorithms=['HS256'])
 
-    def _authenticate(self, auth_header: str | None) -> str:
-        """从 Authorization 头中提取并验证令牌，返回用户名
+    def get_current_user(self, credentials: Annotated[HTTPAuthorizationCredentials, Depends(security)]) -> str:
+        """依赖注入：从 Authorization 头中提取并验证令牌，返回用户名
 
         Raises:
-            AuthFormatError: Authorization 格式错误
-            TokenExpiredError: 令牌已过期
-            TokenInvalidError: 令牌无效
+            HTTPException: 400 格式错误 / 401 令牌过期或无效
         """
+        auth_header = credentials.credentials
+
         if not auth_header:
-            raise AuthFormatError("缺少 Authorization 请求头")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={"code": "MISSING_AUTH", "message": "缺少 Authorization 请求头"}
+            )
         if not auth_header.startswith('Bearer '):
-            raise AuthFormatError("Authorization 格式错误，应为 Bearer token")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={"code": "INVALID_AUTH_FORMAT", "message": "Authorization 格式错误，应为 Bearer token"}
+            )
 
         token = auth_header[7:]
         try:
             payload = self._decode_access_token(token)
         except jwt.ExpiredSignatureError:
-            raise TokenExpiredError("访问令牌已过期，请使用 refresh_token 刷新")
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail={"code": "TOKEN_EXPIRED", "message": "访问令牌已过期"}
+            )
         except jwt.InvalidTokenError:
-            raise TokenInvalidError("令牌无效或已损坏")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={"code": "TOKEN_INVALID", "message": "令牌无效"}
+            )
 
         return payload.get('sub')
 
@@ -80,9 +77,16 @@ class JWTAuth:
         return user is not None and user.get('password') == password
 
     def login(self, username: str, password: str) -> dict[str, str]:
-        """用户登录，验证密码并发放令牌"""
+        """用户登录，验证密码并发放令牌
+
+        Raises:
+            HTTPException: 401 用户名或密码错误
+        """
         if not self._verify_credentials(username, password):
-            raise AuthenticationError("用户名或密码错误")
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail={"code": "INVALID_CREDENTIALS", "message": "用户名或密码错误"}
+            )
         refresh_token = secrets.token_urlsafe(32)
         USERS[username]['refresh_token'] = refresh_token
         USERS[username]['refresh_exp'] = datetime.now(timezone.utc) + timedelta(days=self.refresh_expire_days)
@@ -93,24 +97,23 @@ class JWTAuth:
         """使用刷新令牌获取新的访问令牌
 
         Raises:
-            AuthenticationError: 用户名不存在或 refresh_token 不匹配
-            TokenExpiredError: refresh_token 已过期
+            HTTPException: 401 用户名/token 错误或 refresh_token 过期
         """
         user = USERS.get(username)
         if not user or user.get('refresh_token') != refresh_token:
-            raise AuthenticationError("用户名或 refresh_token 错误")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={"code": "INVALID_REFRESH_TOKEN", "message": "用户名或 refresh_token 错误"}
+            )
 
         refresh_exp = user.get('refresh_exp')
         if refresh_exp and refresh_exp < datetime.now(timezone.utc):
-            raise TokenExpiredError("refresh_token 已过期，请重新登录")
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail={"code": "REFRESH_TOKEN_EXPIRED", "message": "登录已过期，请重新登录"}
+            )
 
         return self._create_access_token(username)
-
-    @property
-    def user_id(self) -> str | None:
-        """从当前请求中获取用户 ID"""
-        auth_header = request.headers.get('Authorization')
-        return self._authenticate(auth_header)
 
 
 jwt_auth = JWTAuth()
