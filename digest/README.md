@@ -1,13 +1,6 @@
 # Digest 认证使用说明
-## 1. 配1
 
-```python
-from digest_auth import DigestAuth
-
-digest_auth = DigestAuth(realm='My App')
-```
-
-## 2. FastAPI HTTP 中间件
+## 1. FastAPI HTTP 中间件
 
 ```python
 from fastapi import Request, Response
@@ -58,7 +51,7 @@ async def digest_auth_middleware(request: Request, call_next):
     return await call_next(request)
 ```
 
-## 3. 依赖注入获取当前用户
+## 2. 依赖注入获取当前用户
 
 ```python
 from typing import Annotated

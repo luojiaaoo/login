@@ -6,8 +6,9 @@ import time
 class DigestAuth:
     """Digest 认证工具类（框架无关）"""
 
-    def __init__(self, realm: str = "Protected Area"):
+    def __init__(self, realm: str = "Protected Area", expire_seconds: int = 300):
         self.realm = realm
+        self.expire_seconds = expire_seconds
         self.qop = 'auth'
 
     def generate_challenge(self, is_stale: bool = False) -> str:
@@ -72,7 +73,7 @@ class DigestAuth:
         # 2. 检查 nonce 是否过期（5 分钟）
         try:
             timestamp = int(nonce.split(':')[-1])
-            if timestamp < int(time.time()) - 300:
+            if timestamp < int(time.time()) - self.expire_seconds:
                 return ...  # nonce 过期
         except (ValueError, IndexError):
             return None
