@@ -1,44 +1,74 @@
 # Digest 认证使用说明
-
-## 1. 请求前钩子（`before_request`）
+## 1. 配1
 
 ```python
+from digest_auth import DigestAuth
+
+digest_auth = DigestAuth(realm='My App')
+```
+
+## 2. FastAPI HTTP 中间件
+
+```python
+from fastapi import Request, Response
+from fastapi.responses import JSONResponse
 from digest_auth import digest_auth
 
-@server.before_request
-def protected_resource():
-    def get_user_password(username) -> str | None:
-        ...
+# 用户数据（实际应使用数据库）
+USERS = {
+    'alice': 'alice123',
+    'bob': 'bob456',
+}
 
-    # 1) 从请求头中读取 Authorization
+def get_user_password(username: str) -> str | None:
+    return USERS.get(username)
+
+@app.middleware("http")
+async def digest_auth_middleware(request: Request, call_next):
+    # 跳过公开接口
+    if request.url.path in ['/public']:
+        return await call_next(request)
+
     auth_header = request.headers.get('Authorization')
-
-    # 2) 执行 Digest 认证
     username = digest_auth.authenticate(
         auth_header,
         request.method,
-        request.path,
+        str(request.url.path),
         get_user_password,
     )
 
-    # nonce 过期：返回 stale challenge，提示客户端重试
+    # nonce 过期：返回 stale challenge
     if username is ...:
-        return (
-            jsonify(error='Stale nonce, please retry'),
-            401,
-            {'WWW-Authenticate': digest_auth.generate_challenge(is_stale=True)},
+        return JSONResponse(
+            status_code=401,
+            content={'error': 'Stale nonce, please retry'},
+            headers={'WWW-Authenticate': digest_auth.generate_challenge(is_stale=True)}
         )
 
     # 认证失败：返回 401 challenge
     if username is None:
-        challenge = digest_auth.generate_challenge()
-        return jsonify(error='Authentication required'), 401, {'WWW-Authenticate': challenge}
+        return JSONResponse(
+            status_code=401,
+            content={'error': 'Authentication required'},
+            headers={'WWW-Authenticate': digest_auth.generate_challenge()}
+        )
+
+    # 认证成功，将用户名存入请求状态
+    request.state.username = username
+    return await call_next(request)
 ```
 
-## 2. 获取当前认证用户 ID
+## 3. 依赖注入获取当前用户
 
 ```python
-from digest_auth import digest_auth
+from typing import Annotated
+from fastapi import Depends, Request
 
-digest_auth.user_id
+def get_current_user(request: Request) -> str:
+    """从请求状态中获取当前用户名"""
+    return request.state.username
+
+@app.get("/profile")
+async def profile(username: Annotated[str, Depends(get_current_user)]):
+    return {"username": username}
 ```

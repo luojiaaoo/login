@@ -1,38 +1,34 @@
 from hashlib import md5
 import uuid
 import time
-from configure import conf
-from flask import request
 
 
 class DigestAuth:
-    """一个简单的Flask Digest认证工具类"""
+    """Digest 认证工具类（框架无关）"""
 
-    def __init__(self, realm=conf.app_title):
+    def __init__(self, realm: str = "Protected Area"):
         self.realm = realm
         self.qop = 'auth'
 
-    def generate_challenge(self, is_stale=False):
-        """生成WWW-Authenticate挑战头"""
+    def generate_challenge(self, is_stale: bool = False) -> str:
+        """生成 WWW-Authenticate 挑战头"""
         nonce = uuid.uuid4().hex + ':' + str(int(time.time()))
         challenge = f'Digest realm="{self.realm}", qop="{self.qop}", nonce="{nonce}", algorithm=MD5'
         if is_stale:
             challenge += ', stale=true'
         return challenge
 
-    def parse_authorization_header(self, auth_header):
-        """解析客户端传来的Authorization头"""
-        # 头格式：Digest username="Mufasa", realm="...", nonce="...", uri="...", response="..."...
+    def _parse_authorization_header(self, auth_header: str) -> dict:
+        """解析客户端传来的 Authorization 头"""
         parts = auth_header.split(', ')
         auth_info = {}
         for part in parts:
             if '=' in part:
                 key, value = part.split('=', 1)
-                # 去掉可能存在的引号
                 auth_info[key.strip()] = value.strip().strip('"')
         return auth_info
 
-    def compute_digest(self, username, password, method, uri, nonce, nc, cnonce, qop):
+    def _compute_digest(self, username: str, password: str, method: str, uri: str, nonce: str, nc: str, cnonce: str, qop: str) -> str:
         """服务器端计算期望的响应摘要"""
         # HA1 = MD5(username:realm:password)
         ha1_str = f'{username}:{self.realm}:{password}'
@@ -44,58 +40,54 @@ class DigestAuth:
 
         # Response = MD5(HA1:nonce:nc:cnonce:qop:HA2)
         response_str = f'{ha1}:{nonce}:{nc}:{cnonce}:{qop}:{ha2}'
-        response = md5(response_str.encode()).hexdigest()
-        return response
+        return md5(response_str.encode()).hexdigest()
 
-    def authenticate(self, auth_header, method, uri, get_password_func):
+    def authenticate(self, auth_header: str | None, method: str, uri: str, get_password_func) -> str | None:
         """
         主认证函数
-        :param auth_header: 请求中的Authorization头
-        :param method: HTTP方法 (GET, POST等)
-        :param uri: 请求的URI
-        :param get_password_func: 一个回调函数，根据用户名返回正确的密码
-        :return: 认证成功返回用户名，失败返回None
+
+        :param auth_header: 请求中的 Authorization 头
+        :param method: HTTP 方法 (GET, POST 等)
+        :param uri: 请求的 URI
+        :param get_password_func: 回调函数，根据用户名返回密码
+        :return: 认证成功返回用户名，失败返回 None，nonce 过期返回 '...'
         """
         if not auth_header or not auth_header.startswith('Digest '):
             return None
 
-        auth_info = self.parse_authorization_header(auth_header[7:])  # 去掉开头的'Digest '
+        auth_info = self._parse_authorization_header(auth_header[7:])
 
         username = auth_info.get('username')
         nonce = auth_info.get('nonce')
-        uri_client: str = auth_info.get('uri')
+        uri_client = auth_info.get('uri', '')
         response = auth_info.get('response')
-        nc = auth_info.get('nc', '')  # 正常要校验增量的，防止重放攻击
+        nc = auth_info.get('nc', '')
         cnonce = auth_info.get('cnonce', '')
         qop = auth_info.get('qop', '')
 
-        # 1. 检查URI是否匹配
+        # 1. 检查 URI 是否匹配
         if (i := uri_client.split('?')[0].replace(uri, '')) and not i.startswith('/'):
-            return None  # URI不匹配
+            return None
 
-        # 2. 检查是否过期，如果过期返回续签标志，保证重放攻击具有时效性
-        timestamp = nonce.split(':')[-1]
-        if int(timestamp) < int(time.time()) - 60 * 5:  # 过期时间设为5分钟
-            return ...  # nonce过期
+        # 2. 检查 nonce 是否过期（5 分钟）
+        try:
+            timestamp = int(nonce.split(':')[-1])
+            if timestamp < int(time.time()) - 300:
+                return ...  # nonce 过期
+        except (ValueError, IndexError):
+            return None
 
-        # 3. 通过回调函数获取该用户的正确密码
+        # 3. 获取用户密码
         password_correct = get_password_func(username)
         if not password_correct:
-            return None  # 用户不存在
+            return None
 
-        # 4. 服务器端计算期望的摘要值
-        expected_response = self.compute_digest(username, password_correct, method, uri_client, nonce, nc, cnonce, qop)
+        # 4. 计算期望的摘要值
+        expected_response = self._compute_digest(
+            username, password_correct, method, uri_client, nonce, nc, cnonce, qop
+        )
 
-        # 5. 比较计算出的摘要和客户端传来的摘要
-        if response == expected_response:
-            return username  # 认证成功！
-        else:
-            return None  # 认证失败
-
-    @property
-    def user_id(self):
-        auth_header = request.headers.get('Authorization')
-        return self.parse_authorization_header(auth_header[7:]).get('username')
-
+        # 5. 比较摘要
+        return username if response == expected_response else None
 
 digest_auth = DigestAuth()
